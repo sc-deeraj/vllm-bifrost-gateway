@@ -1,0 +1,39 @@
+{
+  "$schema": "https://www.getbifrost.ai/schema",
+  "providers": {
+    "local-vllm": {
+      "keys": [
+        {
+          "name": "local-vllm-key",
+          "value": "sk-local-no-auth",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "base_url": "http://model-manager:9000"
+      },
+      "custom_provider_config": {
+        "base_provider_type": "openai",
+        "allowed_requests": {
+          "chat_completion": true,
+          "chat_completion_stream": true,
+          "text_completion": true,
+          "text_completion_stream": true,
+          "embedding": false,
+          "list_models": true
+        },
+        "request_path_overrides": {
+          "chat_completion": "/v1/chat/completions",
+          "chat_completion_stream": "/v1/chat/completions",
+          "text_completion": "/v1/completions",
+          "text_completion_stream": "/v1/completions"
+        }
+      }
+    }
+  },
+  "config_store": {
+    "enabled": true,
+    "type": "sqlite"
+  }
+}

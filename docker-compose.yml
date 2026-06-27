@@ -1,0 +1,81 @@
+services:
+  vllm:
+    image: vllm/vllm-openai:v0.9.2
+    restart: unless-stopped
+    environment:
+      VLLM_ALLOW_RUNTIME_LORA_UPDATING: "True"
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      HF_HOME: /root/.cache/huggingface
+    command: >
+      --model ${BASE_MODEL:-Qwen/Qwen2.5-3B-Instruct}
+      --served-model-name ${BASE_MODEL_ID:-qwen2.5-3b-instruct}
+      --host 0.0.0.0
+      --port 8000
+      --enable-lora
+      --max-loras ${VLLM_MAX_LORAS:-2}
+      --max-lora-rank ${VLLM_MAX_LORA_RANK:-16}
+      --max-cpu-loras ${VLLM_MAX_CPU_LORAS:-4}
+      --max-model-len ${VLLM_MAX_MODEL_LEN:-8192}
+      --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION:-0.85}
+    volumes:
+      - hf-cache:/root/.cache/huggingface
+      - ./loras:/loras
+    # No host port published on purpose: vLLM's runtime LoRA endpoints have
+    # no auth of their own, so only the Model Manager (on the internal
+    # compose network) may reach this service. See README security notes.
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 180s
+      retries: 10
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  model-manager:
+    build: ./model-manager
+    restart: unless-stopped
+    environment:
+      MM_VLLM_BASE_URL: http://vllm:8000
+      MM_BASE_MODEL: ${BASE_MODEL:-Qwen/Qwen2.5-3B-Instruct}
+      MM_BASE_MODEL_ID: ${BASE_MODEL_ID:-qwen2.5-3b-instruct}
+      MM_LORA_DIR: /loras
+      MM_REGISTRY_FILE: /loras/registry.json
+      MM_ADAPTER_CAPACITY: ${MM_ADAPTER_CAPACITY:-2}
+      MM_COLD_START_TIMEOUT_SECONDS: ${MM_COLD_START_TIMEOUT_SECONDS:-90}
+      MM_DRAIN_TIMEOUT_SECONDS: ${MM_DRAIN_TIMEOUT_SECONDS:-30}
+    volumes:
+      - ./loras:/loras
+    ports:
+      # Published for local admin/demo convenience only. In a real
+      # deployment, keep this off the public network too -- it's a control
+      # plane endpoint, not meant for end users.
+      - "${MM_PORT:-9000}:9000"
+    depends_on:
+      vllm:
+        condition: service_healthy
+
+  bifrost:
+    image: maximhq/bifrost:latest
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: info
+      LOG_STYLE: json
+    volumes:
+      - ./bifrost/config.json:/app/data/config.json:ro
+      - bifrost-data:/app/data
+    ports:
+      - "${BIFROST_PORT:-8080}:8080"
+    depends_on:
+      - model-manager
+
+volumes:
+  hf-cache:
+  bifrost-data:

@@ -7,14 +7,14 @@ anthropic_client = Anthropic(base_url="http://localhost:8080/anthropic", api_key
 question = "What is capital of france?"
 
 oa_resp = openai_client.chat.completions.create(
-    model="local-vllm/qwen2.5-3b-instruct",
+    model="local-vllm/Qwen2.5-14B-Instruct-AWQ",
     messages=[{"role": "user", "content": question}],
     max_tokens=80,
 )
 print("[OpenAI SDK]   ", oa_resp.choices[0].message.content.strip())
 
 an_resp = anthropic_client.messages.create(
-    model="local-vllm/qwen2.5-3b-instruct",
+    model="local-vllm/Qwen2.5-14B-Instruct-AWQ",
     max_tokens=80,
     messages=[{"role": "user", "content": question}],
 )

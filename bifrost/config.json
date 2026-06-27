@@ -11,7 +11,8 @@
         }
       ],
       "network_config": {
-        "base_url": "http://model-manager:9000"
+        "base_url": "http://model-manager:9000",
+        "allow_private_network": true
       },
       "custom_provider_config": {
         "base_provider_type": "openai",
@@ -34,6 +35,9 @@
   },
   "config_store": {
     "enabled": true,
-    "type": "sqlite"
+    "type": "sqlite",
+    "config": {
+      "path": "/app/data/config.db"
+    }
   }
 }

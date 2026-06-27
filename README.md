@@ -70,25 +70,65 @@ adapters -- see [Adding a new model](#adding-a-new-model).
 
 ## Setup
 
+A `stack.sh` helper wraps Docker Compose (`./stack.sh help` lists everything):
+
 ```bash
-cp .env.example .env        # edit if you want a different base model / ports
-docker compose up -d --build
-docker compose logs -f vllm  # first start downloads the base model; wait for "Uvicorn running"
+cp .env.example .env         # optional: change base model / ports
+./stack.sh up                # build + start vllm, model-manager, bifrost
+./stack.sh logs vllm         # first start downloads the base model; wait for "Uvicorn running"
 ```
 
-1. **Create a virtual key in Bifrost.** Open `http://localhost:8080`, go to
-   Governance -> Virtual Keys, create one scoped to the `local-vllm`
-   provider with whatever budget you want. Bifrost also exposes a REST API
-   for this (`docs.getbifrost.ai` governance section) if you want to script
-   it instead of using the UI.
-2. **Generate the demo LoRA adapters** (trains 3 tiny adapters against the
+`./stack.sh restart` does a full stop -> rebuild -> up cycle; `./stack.sh down`
+tears it down (named volumes kept). Plain `docker compose up -d --build` still
+works if you prefer.
+
+### Choosing the base model
+
+`docker-compose.yml` defaults to `Qwen/Qwen2.5-3B-Instruct` (bf16). Override in
+`.env` -- `BASE_MODEL` **must be a fully-qualified Hugging Face repo id**
+(`org/name`; a bare name 401s):
+
+```bash
+# .env -- bigger model via AWQ 4-bit, fits a ~20GB card
+BASE_MODEL=Qwen/Qwen2.5-14B-Instruct-AWQ
+BASE_MODEL_ID=qwen2.5-14b-instruct-awq
+```
+
+bf16 bases keep LoRA hot-swap simple; AWQ/GPTQ bases buy capacity but LoRA +
+quantization can be finicky. Changing the base invalidates adapters trained
+against the previous one. After editing `.env`, `./stack.sh up` (or
+`docker compose up -d vllm`) to apply.
+
+### Virtual keys (required -- auth is enforced)
+
+Bifrost runs with `client.enforce_auth_on_inference: true`, so every inference
+request **must** present a valid virtual key in the `x-bf-vk` header. Three are
+pre-seeded in `bifrost/config.json` -- `app-prod`, `app-staging`, `data-team`,
+each scoped to the `local-vllm` provider with all models allowed. Rotate them
+there, or add more via the Bifrost UI (`http://localhost:8080` -> Governance ->
+Virtual Keys) or its governance REST API. Example call:
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "x-bf-vk: <one-of-the-virtual-keys>" \
+  -d '{"model":"local-vllm/qwen2.5-3b-instruct","messages":[{"role":"user","content":"hi"}],"max_tokens":20}'
+```
+
+> **Production:** move the virtual-key values and the upstream provider key out
+> of the committed `bifrost/config.json` into env vars
+> (`"value": "env.VK_APP_PROD"`) so secrets aren't checked into git.
+
+### Demo
+
+1. **Generate the demo LoRA adapters** (trains 3 tiny adapters against the
    same base model, a couple of minutes on the GPU):
    ```bash
    pip install -r scripts/requirements-train.txt   # torch, transformers, peft
    python scripts/make_demo_loras.py
    ```
    Or point `--out-dir`/register your own existing adapter under `./loras/<id>/`.
-3. **Run the demo**:
+2. **Run the demo**:
    ```bash
    pip install -r demo/requirements.txt
    BASE_MODEL_ID=qwen2.5-3b-instruct python demo/demo.py
@@ -98,6 +138,11 @@ docker compose logs -f vllm  # first start downloads the base model; wait for "U
    - (b) switching between two loaded LoRA adapters at runtime
    - (c) requesting a third, not-yet-loaded adapter triggers a cold-start load and succeeds
    - (d) loading that third adapter evicts the least-recently-used one (capacity is 2 by default)
+
+   > `demo/demo.py` predates key enforcement and sends a placeholder key. Give
+   > its OpenAI/Anthropic clients a real `x-bf-vk` (see `test.py` for the
+   > pattern), or temporarily set `enforce_auth_on_inference: false` while
+   > running it.
 
 Clients address models as `<bifrost-provider>/<model-id>`, e.g.
 `local-vllm/demo-pirate` or `local-vllm/qwen2.5-3b-instruct` for the base
@@ -113,6 +158,15 @@ model with no adapter.
 | `POST /admin/models/{id}/unload` (alias `/sleep`) | Unload now; drains in-flight requests first |
 | `DELETE /admin/models/{id}` | Unload (if needed) and forget the adapter entirely |
 | `GET /health` | Model Manager + vLLM reachability |
+
+These run on the internal network only -- port 9000 is **not** published to the
+host (see [Security](#security)). Call them from another compose service, or
+from the host via `docker compose exec`, e.g.:
+
+```bash
+docker compose exec model-manager \
+  python3 -c "import urllib.request,json; print(json.dumps(json.load(urllib.request.urlopen('http://localhost:9000/admin/models')),indent=2))"
+```
 
 `sleep`/`wake` are aliases of `unload`/`load` here, not separate states.
 Strategy B's "sleep" (CPU-offload a multi-GB engine, keep the process alive)
@@ -164,13 +218,19 @@ the right tool -- not built here since Strategy A doesn't need them.
   talks to it. This matters because `VLLM_ALLOW_RUNTIME_LORA_UPDATING=True`
   lets any caller with access to that port load an arbitrary local path as
   a LoRA adapter; it must never be internet- or even LAN-facing.
-- Model Manager's port (9000) is published in this Compose file for local
-  demo/admin convenience only. In any shared environment, remove that port
-  mapping (or put it behind a firewall/VPN) -- it has no auth of its own and
-  is a control-plane surface, not meant for end users.
-- Real client traffic only ever talks to Bifrost (8080), authenticated via
-  virtual keys (`x-bf-vk` header). Bifrost stores the (dummy, since vLLM has
-  no auth) upstream key, never exposed to clients.
+- Model Manager's port (9000) is **not published to the host either** -- it's
+  `expose`-only on the internal network (`http://model-manager:9000`), reached
+  only by Bifrost. It's a control-plane surface with no auth of its own, so it
+  stays off the host; for host-side admin use `docker compose exec model-manager ...`.
+- **Bifrost (8080) is the only public surface, and auth is enforced**
+  (`enforce_auth_on_inference: true`): inference requires a valid virtual key
+  (`x-bf-vk`); unkeyed requests are rejected. Bifrost reaches the Model Manager
+  over the Docker private network, which requires `allow_private_network: true`
+  on the provider's `network_config` (Bifrost blocks RFC-1918 IPs by default).
+- Bifrost stores the upstream provider key (which vLLM/Model Manager don't
+  actually validate); it's never exposed to clients. Keep the real virtual-key
+  and provider-key values in environment variables, not committed to
+  `bifrost/config.json`.
 
 ## Adding a new model
 

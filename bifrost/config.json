@@ -1,11 +1,14 @@
 {
   "$schema": "https://www.getbifrost.ai/schema",
+  "client": {
+    "enforce_auth_on_inference": true
+  },
   "providers": {
     "local-vllm": {
       "keys": [
         {
           "name": "local-vllm-key",
-          "value": "sk-local-no-auth",
+          "value": "sk-vllm-ea999536bb94a724fcfe160bfe185e3967f15e0754684d06",
           "models": ["*"],
           "weight": 1.0
         }
@@ -32,6 +35,55 @@
         }
       }
     }
+  },
+  "governance": {
+    "virtual_keys": [
+      {
+        "id": "vk-app-prod",
+        "name": "app-prod",
+        "description": "Production application clients",
+        "value": "sk-bf-f3a27705a3f6c8af23a6a31d9b78f292c1eb65752d346837",
+        "is_active": true,
+        "provider_configs": [
+          {
+            "provider": "local-vllm",
+            "weight": 1.0,
+            "allowed_models": ["*"],
+            "key_ids": ["*"]
+          }
+        ]
+      },
+      {
+        "id": "vk-app-staging",
+        "name": "app-staging",
+        "description": "Staging / pre-prod clients",
+        "value": "sk-bf-ef1fdc7fd32b15cb43d2ae42b4503760653636ab81132498",
+        "is_active": true,
+        "provider_configs": [
+          {
+            "provider": "local-vllm",
+            "weight": 1.0,
+            "allowed_models": ["*"],
+            "key_ids": ["*"]
+          }
+        ]
+      },
+      {
+        "id": "vk-data-team",
+        "name": "data-team",
+        "description": "Internal data/analytics team",
+        "value": "sk-bf-70937424645b7918cca7047b04b09a9bfc04c5f850d4c903",
+        "is_active": true,
+        "provider_configs": [
+          {
+            "provider": "local-vllm",
+            "weight": 1.0,
+            "allowed_models": ["*"],
+            "key_ids": ["*"]
+          }
+        ]
+      }
+    ]
   },
   "config_store": {
     "enabled": true,

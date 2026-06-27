@@ -53,11 +53,13 @@ services:
       MM_DRAIN_TIMEOUT_SECONDS: ${MM_DRAIN_TIMEOUT_SECONDS:-30}
     volumes:
       - ./loras:/loras
-    ports:
-      # Published for local admin/demo convenience only. In a real
-      # deployment, keep this off the public network too -- it's a control
-      # plane endpoint, not meant for end users.
-      - "${MM_PORT:-9000}:9000"
+    # Not published to the host: the Model Manager is a control-plane +
+    # data-plane endpoint with no auth of its own. Only Bifrost reaches it,
+    # over the internal compose network at http://model-manager:9000.
+    # Bifrost (8080) is the only public surface. For host-side admin, use
+    # `docker compose exec model-manager ...` or `curl` from another service.
+    expose:
+      - "9000"
     depends_on:
       vllm:
         condition: service_healthy

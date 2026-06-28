@@ -118,7 +118,7 @@ def main():
                     "sk-bf-f3a27705a3f6c8af23a6a31d9b78f292c1eb65752d346837"),
                     help="virtual key for the x-bf-vk header (or set BENCH_VK)")
     ap.add_argument("--model", default=os.environ.get(
-                    "BENCH_MODEL", "local-vllm/qwen2.5-14b-instruct-awq"),
+                    "BENCH_MODEL", "local-vllm/qwen3.5-9b"),
                     help="provider/model id to benchmark")
     ap.add_argument("--requests", type=int, default=10, help="total requests to send")
     ap.add_argument("--concurrency", type=int, default=1, help="parallel in-flight requests")

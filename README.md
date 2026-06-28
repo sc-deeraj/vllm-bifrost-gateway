@@ -84,20 +84,43 @@ works if you prefer.
 
 ### Choosing the base model
 
-`docker-compose.yml` defaults to `Qwen/Qwen2.5-3B-Instruct` (bf16). Override in
-`.env` -- `BASE_MODEL` **must be a fully-qualified Hugging Face repo id**
-(`org/name`; a bare name 401s):
+`docker-compose.yml` defaults to `Qwen/Qwen3.5-9B` -- a **multimodal**
+(text + image) bf16 model. Image input works out of the box (no plugin); send
+an OpenAI `image_url` content part (see `test.py`). Override in `.env` --
+`BASE_MODEL` **must be a fully-qualified Hugging Face repo id** (`org/name`; a
+bare name 401s):
 
 ```bash
-# .env -- bigger model via AWQ 4-bit, fits a ~20GB card
-BASE_MODEL=Qwen/Qwen2.5-14B-Instruct-AWQ
-BASE_MODEL_ID=qwen2.5-14b-instruct-awq
+# .env -- e.g. pin a different model
+BASE_MODEL=Qwen/Qwen3.5-9B
+BASE_MODEL_ID=qwen3.5-9b
 ```
 
-bf16 bases keep LoRA hot-swap simple; AWQ/GPTQ bases buy capacity but LoRA +
-quantization can be finicky. Changing the base invalidates adapters trained
-against the previous one. After editing `.env`, `./stack.sh up` (or
-`docker compose up -d vllm`) to apply.
+> **vLLM version:** Qwen3.5 needs a current vLLM -- the previous `v0.9.2` pin
+> cannot load it. The compose file now uses `${VLLM_IMAGE:-vllm/vllm-openai:latest}`;
+> pin a known-good tag once verified, or use a nightly image if `latest` lags.
+
+Changing the base invalidates any LoRA adapters trained against the previous
+one. After editing `.env`, `./stack.sh up` (or `docker compose up -d vllm`).
+
+### Precision (FP16 / FP8 / FP4)
+
+Set `VLLM_PRECISION` in `.env`. The entrypoint (`vllm/entrypoint.sh`)
+translates it into the right vLLM flags:
+
+| `VLLM_PRECISION` | weights | flags | runs on this 24GB RTX 4000 (Ada)? |
+| --- | --- | --- | --- |
+| `FP16` (default) | ~18 GB | `--dtype bfloat16`* | tight -- little KV headroom; use FP8 or lower `VLLM_MAX_MODEL_LEN` |
+| `FP8` | ~9 GB | `--quantization fp8` | **yes, recommended** |
+| `FP4` | ~4.5 GB | `--quantization modelopt_fp4` | **no** -- NVFP4 needs a Blackwell GPU + a pre-quantized FP4 checkpoint |
+
+\* Qwen3.5 is bf16-native, so "full 16-bit precision" maps to bf16 (float16
+risks overflow). Set `VLLM_DTYPE=float16` to force true fp16.
+
+Vision uses VRAM too: set `VLLM_LANGUAGE_MODEL_ONLY=true` to drop the vision
+encoder for text-only serving. LoRA hot-swap is **off by default** now
+(`VLLM_ENABLE_LORA=true` to re-enable; safe with FP16, finicky with FP8/FP4).
+See `.env.example` for every knob.
 
 ### Virtual keys (required -- auth is enforced)
 

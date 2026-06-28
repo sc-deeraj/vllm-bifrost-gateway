@@ -1,25 +1,44 @@
 services:
   vllm:
-    image: vllm/vllm-openai:v0.9.2
+    # Qwen3.5 is recent: it needs a current vLLM (the v0.9.2 pin cannot load
+    # it). Pin a specific tag here once you've verified one; `latest` tracks
+    # the newest published image. If a stable tag lacks Qwen3.5 support, use a
+    # nightly image (see https://wheels.vllm.ai/nightly).
+    image: ${VLLM_IMAGE:-vllm/vllm-openai:latest}
     restart: unless-stopped
+    # Precision (FP16/FP8/FP4), vision, and optional LoRA flags are assembled
+    # by the entrypoint script from the env vars below -- compose `command:`
+    # can't express the conditional logic (FP16 = *no* --quantization flag).
+    entrypoint: ["/bin/bash", "/vllm-entrypoint.sh"]
     environment:
+      # --- model ---
+      BASE_MODEL: ${BASE_MODEL:-Qwen/Qwen3.5-9B}
+      BASE_MODEL_ID: ${BASE_MODEL_ID:-qwen3.5-9b}
+      # --- precision: FP16 (full, default) | FP8 | FP4 ---
+      VLLM_PRECISION: ${VLLM_PRECISION:-FP16}
+      VLLM_DTYPE: ${VLLM_DTYPE:-}
+      VLLM_FP4_METHOD: ${VLLM_FP4_METHOD:-modelopt_fp4}
+      # --- capacity / context ---
+      VLLM_MAX_MODEL_LEN: ${VLLM_MAX_MODEL_LEN:-32768}
+      VLLM_GPU_MEMORY_UTILIZATION: ${VLLM_GPU_MEMORY_UTILIZATION:-0.90}
+      VLLM_REASONING_PARSER: ${VLLM_REASONING_PARSER:-qwen3}
+      # --- multimodal / vision ---
+      VLLM_LANGUAGE_MODEL_ONLY: ${VLLM_LANGUAGE_MODEL_ONLY:-false}
+      VLLM_MAX_IMAGES_PER_PROMPT: ${VLLM_MAX_IMAGES_PER_PROMPT:-2}
+      # --- optional LoRA hot-swap (off by default for the vision path) ---
+      VLLM_ENABLE_LORA: ${VLLM_ENABLE_LORA:-false}
+      VLLM_MAX_LORAS: ${VLLM_MAX_LORAS:-2}
+      VLLM_MAX_LORA_RANK: ${VLLM_MAX_LORA_RANK:-16}
+      VLLM_MAX_CPU_LORAS: ${VLLM_MAX_CPU_LORAS:-4}
+      VLLM_EXTRA_ARGS: ${VLLM_EXTRA_ARGS:-}
+      # --- runtime ---
       VLLM_ALLOW_RUNTIME_LORA_UPDATING: "True"
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
       HF_HOME: /root/.cache/huggingface
-    command: >
-      --model ${BASE_MODEL:-Qwen/Qwen2.5-3B-Instruct}
-      --served-model-name ${BASE_MODEL_ID:-qwen2.5-3b-instruct}
-      --host 0.0.0.0
-      --port 8000
-      --enable-lora
-      --max-loras ${VLLM_MAX_LORAS:-2}
-      --max-lora-rank ${VLLM_MAX_LORA_RANK:-16}
-      --max-cpu-loras ${VLLM_MAX_CPU_LORAS:-4}
-      --max-model-len ${VLLM_MAX_MODEL_LEN:-8192}
-      --gpu-memory-utilization ${VLLM_GPU_MEMORY_UTILIZATION:-0.85}
     volumes:
       - hf-cache:/root/.cache/huggingface
       - ./loras:/loras
+      - ./vllm/entrypoint.sh:/vllm-entrypoint.sh:ro
     # No host port published on purpose: vLLM's runtime LoRA endpoints have
     # no auth of their own, so only the Model Manager (on the internal
     # compose network) may reach this service. See README security notes.
@@ -29,8 +48,9 @@ services:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
       interval: 15s
       timeout: 5s
-      start_period: 180s
-      retries: 10
+      # Qwen3.5-9B is a large first download + load; give it generous slack.
+      start_period: 600s
+      retries: 20
     deploy:
       resources:
         reservations:
@@ -44,8 +64,8 @@ services:
     restart: unless-stopped
     environment:
       MM_VLLM_BASE_URL: http://vllm:8000
-      MM_BASE_MODEL: ${BASE_MODEL:-Qwen/Qwen2.5-3B-Instruct}
-      MM_BASE_MODEL_ID: ${BASE_MODEL_ID:-qwen2.5-3b-instruct}
+      MM_BASE_MODEL: ${BASE_MODEL:-Qwen/Qwen3.5-9B}
+      MM_BASE_MODEL_ID: ${BASE_MODEL_ID:-qwen3.5-9b}
       MM_LORA_DIR: /loras
       MM_REGISTRY_FILE: /loras/registry.json
       MM_ADAPTER_CAPACITY: ${MM_ADAPTER_CAPACITY:-2}

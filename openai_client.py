@@ -222,14 +222,120 @@ def query_model_with_vision(
     return (resp.choices[0].message.content or "").strip()
 
 
+class ConversationManager:
+    """Manage multi-turn conversations with context history."""
+
+    def __init__(
+        self,
+        model: str = "local-vllm/qwen3.5-9b",
+        max_tokens: int = 512,
+        base_url: str = "http://localhost:8080/openai",
+        api_key: Optional[str] = None,
+        config_path: Optional[pathlib.Path] = None,
+    ):
+        """
+        Initialize conversation manager.
+
+        Args:
+            model: Model identifier
+            max_tokens: Max tokens per response
+            base_url: Bifrost gateway URL
+            api_key: API key or virtual key
+            config_path: Path to bifrost config.json
+        """
+        self.model = model
+        self.max_tokens = max_tokens
+        self.base_url = base_url
+        self.api_key = api_key
+        self.config_path = config_path
+        self.messages = []
+        self.client = get_client(
+            base_url=base_url,
+            api_key=api_key,
+            config_path=config_path,
+        )
+
+    def add_user_message(self, content: str) -> None:
+        """Add user message to conversation history."""
+        self.messages.append({"role": "user", "content": content})
+
+    def add_assistant_message(self, content: str) -> None:
+        """Add assistant message to conversation history."""
+        self.messages.append({"role": "assistant", "content": content})
+
+    def query(self, user_input: str) -> str:
+        """
+        Send a message and get a response, maintaining context.
+
+        Args:
+            user_input: User message to send
+
+        Returns:
+            Assistant response
+
+        Example:
+            conv = ConversationManager(api_key="your-key")
+            answer1 = conv.query("What is Python?")
+            answer2 = conv.query("Can you explain more?")  # Has context of first question
+        """
+        self.add_user_message(user_input)
+
+        resp = self.client.chat.completions.create(
+            model=self.model,
+            messages=self.messages,
+            max_tokens=self.max_tokens,
+        )
+
+        content = (resp.choices[0].message.content or "").strip()
+        self.add_assistant_message(content)
+        return content
+
+    def get_history(self) -> list[dict]:
+        """Get the full conversation history."""
+        return self.messages.copy()
+
+    def clear(self) -> None:
+        """Clear conversation history."""
+        self.messages = []
+
+    def set_system_prompt(self, system_prompt: str) -> None:
+        """Set system prompt at the beginning of conversation."""
+        if self.messages and self.messages[0]["role"] == "system":
+            self.messages[0]["content"] = system_prompt
+        else:
+            self.messages.insert(0, {"role": "system", "content": system_prompt})
+
+
 if __name__ == "__main__":
     # Example usage
     API_KEY = "sk-bf-f3a27705a3f6c8af23a6a31d9b78f292c1eb65752d346837"
-    print("=== Simple Query ===")
+
+    print("=== Simple Query (No Context) ===")
     answer = query_model("What is the capital of France?", api_key=API_KEY)
     print(f"Answer: {answer}\n")
 
-    print("=== Query with Reasoning ===")
-    answer = query_model("What is 2+2?", api_key=API_KEY)
-    print(f"Answer: {answer}")
+    print("=== Continued Chat (With Context) ===")
+    conv = ConversationManager(api_key=API_KEY)
+
+    # First question
+    q1 = "What is Python?"
+    print(f"User: {q1}")
+    a1 = conv.query(q1)
+    print(f"Assistant: {a1}\n")
+
+    # Follow-up question (model remembers context)
+    q2 = "Can you give me a simple example?"
+    print(f"User: {q2}")
+    a2 = conv.query(q2)
+    print(f"Assistant: {a2}\n")
+
+    # Another follow-up
+    q3 = "What was my first question?"
+    print(f"User: {q3}")
+    a3 = conv.query(q3)
+    print(f"Assistant: {a3}\n")
+
+    print("=== Conversation History ===")
+    for msg in conv.get_history():
+        print(f"{msg['role'].upper()}: {msg['content'][:100]}...")
 

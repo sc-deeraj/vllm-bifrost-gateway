@@ -4,10 +4,10 @@
     "enforce_auth_on_inference": true
   },
   "providers": {
-    "local-vllm": {
+    "vllm-openai-compatible": {
       "keys": [
         {
-          "name": "local-vllm-key",
+          "name": "vllm-provider-key",
           "value": "sk-vllm-ea999536bb94a724fcfe160bfe185e3967f15e0754684d06",
           "models": ["*"],
           "weight": 1.0
@@ -34,6 +34,31 @@
           "text_completion_stream": "/v1/completions"
         }
       }
+    },
+    "vllm-anthropic-compatible": {
+      "keys": [
+        {
+          "name": "vllm-provider-key",
+          "value": "sk-vllm-ea999536bb94a724fcfe160bfe185e3967f15e0754684d06",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "base_url": "http://model-manager:9000",
+        "allow_private_network": true
+      },
+      "custom_provider_config": {
+        "base_provider_type": "anthropic",
+        "allowed_requests": {
+          "chat_completion": true,
+          "chat_completion_stream": true
+        },
+        "request_path_overrides": {
+          "chat_completion": "/v1/messages",
+          "chat_completion_stream": "/v1/messages"
+        }
+      }
     }
   },
   "governance": {
@@ -46,8 +71,14 @@
         "is_active": true,
         "provider_configs": [
           {
-            "provider": "local-vllm",
-            "weight": 1.0,
+            "provider": "vllm-openai-compatible",
+            "weight": 0.5,
+            "allowed_models": ["*"],
+            "key_ids": ["*"]
+          },
+          {
+            "provider": "vllm-anthropic-compatible",
+            "weight": 0.5,
             "allowed_models": ["*"],
             "key_ids": ["*"]
           }
@@ -61,8 +92,14 @@
         "is_active": true,
         "provider_configs": [
           {
-            "provider": "local-vllm",
-            "weight": 1.0,
+            "provider": "vllm-openai-compatible",
+            "weight": 0.5,
+            "allowed_models": ["*"],
+            "key_ids": ["*"]
+          },
+          {
+            "provider": "vllm-anthropic-compatible",
+            "weight": 0.5,
             "allowed_models": ["*"],
             "key_ids": ["*"]
           }
@@ -76,8 +113,14 @@
         "is_active": true,
         "provider_configs": [
           {
-            "provider": "local-vllm",
-            "weight": 1.0,
+            "provider": "vllm-openai-compatible",
+            "weight": 0.5,
+            "allowed_models": ["*"],
+            "key_ids": ["*"]
+          },
+          {
+            "provider": "vllm-anthropic-compatible",
+            "weight": 0.5,
             "allowed_models": ["*"],
             "key_ids": ["*"]
           }

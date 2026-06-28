@@ -89,7 +89,6 @@ def get_client(
     return OpenAI(
         base_url=config.base_url,
         api_key=config.api_key,
-        default_headers={"x-bf-vk": config.api_key},
     )
 
 

@@ -28,15 +28,19 @@ class Config:
     anthropic_base_url: str = "http://localhost:8080/anthropic"
 
     # Through Bifrost, models are addressed as "<provider>/<model-id>". The
-    # provider prefix is required for routing; model_id must match BASE_MODEL_ID.
-    provider: str = "local-vllm"
+    # provider prefix is required for routing, and bifrost/config.json defines
+    # one provider per wire format -- not a single shared "local-vllm" -- since
+    # /openai and /anthropic each need their own base_provider_type. model_id
+    # must match BASE_MODEL_ID.
+    openai_provider: str = "vllm-openai-compatible"
+    anthropic_provider: str = "vllm-anthropic-compatible"
     model_id: str = "qwen3.5-9b"
 
     # Generous cap: Qwen3.5 is a reasoning model and spends tokens "thinking"
     # before answering. A small cap gets consumed by thinking, leaving no answer.
     max_tokens: int = 512
 
-    question: str = "What is the capital of France?"
+    question: str = "What is the capital of italy? Please explain your reasoning before answering."
 
     # Toggles for the optional sections.
     show_reasoning: bool = False
@@ -53,8 +57,12 @@ class Config:
     image_user_agent: str = "Mozilla/5.0"
 
     @property
-    def model(self) -> str:
-        return f"{self.provider}/{self.model_id}"
+    def openai_model(self) -> str:
+        return f"{self.openai_provider}/{self.model_id}"
+
+    @property
+    def anthropic_model(self) -> str:
+        return f"{self.anthropic_provider}/{self.model_id}"
 
 
 # --------------------------------------------------------------------------- #
@@ -68,11 +76,11 @@ def load_virtual_key(config_path: pathlib.Path) -> str:
 
 def make_openai_client(base_url: str, vk: str) -> OpenAI:
     # Bifrost enforces auth via the x-bf-vk header.
-    return OpenAI(base_url=base_url, api_key=vk, default_headers={"x-bf-vk": vk})
+    return OpenAI(base_url=base_url, api_key=vk)
 
 
 def make_anthropic_client(base_url: str, vk: str) -> Anthropic:
-    return Anthropic(base_url=base_url, api_key=vk, default_headers={"x-bf-vk": vk})
+    return Anthropic(base_url=base_url, api_key=vk)
 
 
 # --------------------------------------------------------------------------- #
@@ -101,6 +109,7 @@ def ask_anthropic(client: Anthropic, model: str, question: str, max_tokens: int)
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": question}],
     )
+    # print(resp)
     text = next((b.text for b in resp.content if getattr(b, "type", None) == "text"), "")
     return text.strip()
 
@@ -140,21 +149,20 @@ def main(cfg: Config = Config()) -> None:
     vk = load_virtual_key(cfg.config_path)
     openai_client = make_openai_client(cfg.openai_base_url, vk)
     anthropic_client = make_anthropic_client(cfg.anthropic_base_url, vk)
-
     oa_answer, oa_reasoning = ask_openai(
-        openai_client, cfg.model, cfg.question, cfg.max_tokens
+        openai_client, cfg.openai_model, cfg.question, cfg.max_tokens
     )
     print("[OpenAI SDK]   ", oa_answer)
     if cfg.show_reasoning:
         print("[OpenAI reasoning]", oa_reasoning or "(no reasoning text -- raise max_tokens)")
 
-    an_answer = ask_anthropic(anthropic_client, cfg.model, cfg.question, cfg.max_tokens)
+    an_answer = ask_anthropic(anthropic_client, cfg.anthropic_model, cfg.question, cfg.max_tokens)
     print("[Anthropic SDK]", an_answer or "(no answer text -- raise max_tokens)")
 
     if cfg.run_vision:
         data_uri = fetch_image_data_uri(cfg.image_url, cfg.image_user_agent)
         vision_answer = ask_openai_vision(
-            openai_client, cfg.model, cfg.vision_prompt, data_uri, cfg.max_tokens
+            openai_client, cfg.openai_model, cfg.vision_prompt, data_uri, cfg.max_tokens
         )
         print("[OpenAI vision]", vision_answer)
 

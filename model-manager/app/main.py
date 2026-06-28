@@ -23,17 +23,20 @@ logger = logging.getLogger("model_manager")
 
 app = FastAPI(title="Model Manager")
 
-# Bifrost clients address models as "local-vllm/<id>" to disambiguate
-# provider routing. Whether Bifrost strips that prefix before forwarding
-# upstream isn't pinned down by its docs, so normalize defensively here:
-# strip it if present, and rewrite the outgoing body to match, so vLLM
-# always sees the bare id it actually knows about either way.
-_PROVIDER_PREFIX = "local-vllm/"
+# Bifrost clients address models as "<provider>/<id>" to disambiguate
+# provider routing -- one provider per wire format (see bifrost/config.json:
+# vllm-openai-compatible, vllm-anthropic-compatible). Whether Bifrost strips
+# that prefix before forwarding upstream isn't pinned down by its docs, so
+# normalize defensively here: strip it if present, and rewrite the outgoing
+# body to match, so vLLM always sees the bare id it actually knows about
+# either way.
+_PROVIDER_PREFIXES = ("vllm-openai-compatible/", "vllm-anthropic-compatible/")
 
 
 def _strip_provider_prefix(model_id: str) -> str:
-    if model_id.startswith(_PROVIDER_PREFIX):
-        return model_id[len(_PROVIDER_PREFIX):]
+    for prefix in _PROVIDER_PREFIXES:
+        if model_id.startswith(prefix):
+            return model_id[len(prefix):]
     return model_id
 
 

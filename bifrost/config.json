@@ -58,7 +58,9 @@
         },
         "request_path_overrides": {
           "chat_completion": "/v1/messages",
-          "chat_completion_stream": "/v1/messages"
+          "chat_completion_stream": "/v1/messages",
+          "responses": "/v1/messages",
+          "responses_stream": "/v1/messages"
         }
       }
     }

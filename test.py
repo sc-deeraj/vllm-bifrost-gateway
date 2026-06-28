@@ -156,7 +156,7 @@ def main(cfg: Config = Config()) -> None:
     if cfg.show_reasoning:
         print("[OpenAI reasoning]", oa_reasoning or "(no reasoning text -- raise max_tokens)")
 
-    an_answer = ask_anthropic(anthropic_client, cfg.anthropic_model, cfg.question, cfg.max_tokens)
+    an_answer = ask_anthropic(anthropic_client, cfg.openai_model, cfg.question, cfg.max_tokens)
     print("[Anthropic SDK]", an_answer or "(no answer text -- raise max_tokens)")
 
     if cfg.run_vision:

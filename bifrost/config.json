@@ -52,7 +52,9 @@
         "base_provider_type": "anthropic",
         "allowed_requests": {
           "chat_completion": true,
-          "chat_completion_stream": true
+          "chat_completion_stream": true,
+          "responses": true,
+          "responses_stream": true
         },
         "request_path_overrides": {
           "chat_completion": "/v1/messages",

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import time
@@ -6,6 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .config import settings
+from .redis_client import redis_client
 from .registry import (
     AlreadyExistsError,
     CapacityError,
@@ -59,12 +61,14 @@ def _to_view(adapter) -> AdapterView:
 
 @app.on_event("startup")
 async def on_startup():
+    await redis_client.connect()
     await registry.reconcile()
 
 
 @app.on_event("shutdown")
 async def on_shutdown():
     await vllm_client.aclose()
+    await redis_client.disconnect()
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +101,7 @@ async def admin_list_models():
 @app.post("/admin/models")
 async def admin_register_model(req: RegisterAdapterRequest):
     try:
-        adapter = registry.register(req.id, req.path, rank=req.rank, description=req.description)
+        adapter = await registry.register(req.id, req.path, rank=req.rank, description=req.description)
     except AlreadyExistsError:
         return _error(409, f"'{req.id}' is already registered", "already_exists")
     return _to_view(adapter)
@@ -174,6 +178,14 @@ async def list_models():
         return _error(502, f"could not reach vLLM: {exc}", "upstream_error")
 
 
+def _cache_key_for_request(model_id: str, payload: dict) -> str:
+    payload_copy = payload.copy()
+    payload_copy.pop("stream", None)
+    payload_str = json.dumps(payload_copy, sort_keys=True)
+    key_hash = hashlib.sha256(payload_str.encode()).hexdigest()
+    return f"inference:{model_id}:{key_hash}"
+
+
 @app.post("/v1/chat/completions")
 @app.post("/v1/completions")
 async def proxy_completions(request: Request):
@@ -190,6 +202,15 @@ async def proxy_completions(request: Request):
     if model_id != model_id_raw:
         payload["model"] = model_id
         body = json.dumps(payload).encode()
+
+    is_streaming = payload.get("stream", False)
+    cache_key = _cache_key_for_request(model_id, payload) if not is_streaming else None
+
+    if cache_key:
+        cached = await redis_client.get(cache_key)
+        if cached:
+            logger.info("cache hit: %s", cache_key)
+            return JSONResponse(content=cached)
 
     try:
         await registry.ensure_loaded(model_id, claim=True)
@@ -216,9 +237,6 @@ async def proxy_completions(request: Request):
     started = time.monotonic()
     upstream_path = request.url.path
 
-    # Open the upstream call and peek the status/headers before streaming the
-    # body back, so errors from vLLM (e.g. context-length exceeded) surface
-    # with the right status code instead of always returning 200.
     upstream_ctx = vllm_client.stream(request.method, upstream_path, body, dict(request.headers))
     try:
         upstream = await upstream_ctx.__aenter__()
@@ -246,8 +264,36 @@ async def proxy_completions(request: Request):
                 time.monotonic() - started,
             )
 
-    return StreamingResponse(
-        relay_opened(),
+    if is_streaming:
+        return StreamingResponse(
+            relay_opened(),
+            status_code=upstream.status_code,
+            headers=response_headers,
+        )
+
+    content = await upstream.aread()
+    await upstream_ctx.__aexit__(None, None, None)
+    registry.release(model_id)
+    logger.info(
+        "proxied %s model=%s status=%s in %.2fs",
+        upstream_path,
+        model_id,
+        upstream.status_code,
+        time.monotonic() - started,
+    )
+
+    if upstream.status_code == 200 and cache_key:
+        try:
+            response_data = json.loads(content)
+            await redis_client.set(
+                cache_key, response_data, ttl=settings.redis_response_cache_ttl
+            )
+            logger.info("cached response: %s", cache_key)
+        except Exception as exc:
+            logger.warning("failed to cache response: %s", exc)
+
+    return JSONResponse(
+        content=json.loads(content) if upstream.status_code == 200 else None,
         status_code=upstream.status_code,
         headers=response_headers,
     )

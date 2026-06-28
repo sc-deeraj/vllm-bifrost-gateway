@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Optional
 
 from .config import settings
+from .redis_client import redis_client
 from .vllm_client import VLLMError, vllm_client
 
 logger = logging.getLogger("model_manager.registry")
@@ -103,6 +104,40 @@ class Registry:
                 state=AdapterState.UNLOADED,
             )
 
+    async def _sync_adapter_to_redis(self, adapter: "Adapter") -> None:
+        key = f"adapter:{adapter.id}"
+        mapping = {
+            "id": adapter.id,
+            "path": adapter.path,
+            "state": adapter.state.value,
+            "pinned": str(adapter.pinned),
+            "rank": str(adapter.rank) if adapter.rank is not None else "",
+            "description": adapter.description or "",
+            "last_used": str(adapter.last_used),
+            "in_flight": str(adapter.in_flight),
+        }
+        await redis_client.hset(key, mapping, ttl=settings.redis_registry_ttl)
+
+    async def _load_adapter_from_redis(self, adapter_id: str) -> Optional["Adapter"]:
+        key = f"adapter:{adapter_id}"
+        data = await redis_client.hgetall(key)
+        if not data:
+            return None
+        try:
+            return Adapter(
+                id=data.get("id"),
+                path=data.get("path"),
+                state=AdapterState(data.get("state", "unloaded")),
+                pinned=data.get("pinned") == "True",
+                rank=int(data["rank"]) if data.get("rank") else None,
+                description=data.get("description") or None,
+                last_used=float(data.get("last_used", time.time())),
+                in_flight=int(data.get("in_flight", "0")),
+            )
+        except (ValueError, KeyError) as exc:
+            logger.warning("failed to load adapter from redis: %s", exc)
+            return None
+
     def _persist(self) -> None:
         catalog = [
             {
@@ -120,7 +155,7 @@ class Registry:
             json.dump(catalog, f, indent=2)
         os.replace(tmp_path, settings.registry_file)
 
-    def register(
+    async def register(
         self,
         adapter_id: str,
         path: str,
@@ -139,6 +174,7 @@ class Registry:
         )
         self._adapters[adapter_id] = adapter
         self._persist()
+        await self._sync_adapter_to_redis(adapter)
         return adapter
 
     def list(self) -> list[Adapter]:
@@ -153,13 +189,15 @@ class Registry:
         independently. Runs once at startup before traffic is accepted, so
         no locking needed here."""
         self._load_catalog_from_disk()
-        self._adapters[settings.base_model_id] = Adapter(
+        base_adapter = Adapter(
             id=settings.base_model_id,
             path=settings.base_model,
             state=AdapterState.LOADED,
             pinned=True,
             description="base model (always resident)",
         )
+        self._adapters[settings.base_model_id] = base_adapter
+        await self._sync_adapter_to_redis(base_adapter)
         try:
             live = await vllm_client.list_models()
             live_ids = {m["id"] for m in live.get("data", [])}
@@ -174,6 +212,7 @@ class Registry:
             )
             if adapter.state == AdapterState.LOADED:
                 adapter.last_used = time.time()
+            await self._sync_adapter_to_redis(adapter)
         logger.info(
             "reconciled %d known adapters (%d currently loaded)",
             len(self._adapters) - 1,
@@ -216,21 +255,25 @@ class Registry:
 
             await self._make_room_for(adapter_id)
             adapter.state = AdapterState.LOADING
+            await self._sync_adapter_to_redis(adapter)
             try:
                 await asyncio.wait_for(
                     vllm_client.load_lora_adapter(adapter.id, adapter.path),
                     timeout=settings.cold_start_timeout_seconds,
                 )
             except asyncio.TimeoutError as exc:
-                adapter.state = AdapterState.UNLOADED  # atomic: leave prior state intact
+                adapter.state = AdapterState.UNLOADED
+                await self._sync_adapter_to_redis(adapter)
                 raise ColdStartTimeoutError(adapter_id) from exc
             except VLLMError:
                 adapter.state = AdapterState.UNLOADED
+                await self._sync_adapter_to_redis(adapter)
                 raise
             adapter.state = AdapterState.LOADED
             if claim:
                 adapter.in_flight += 1
             adapter.last_used = time.time()
+            await self._sync_adapter_to_redis(adapter)
             return adapter
 
     async def load(self, adapter_id: str) -> Adapter:
@@ -252,6 +295,7 @@ class Registry:
             ok = await self._drain_and_unload(adapter, deadline)
             if not ok:
                 raise ColdStartTimeoutError(adapter_id)
+            await self._sync_adapter_to_redis(adapter)
             return adapter
 
     async def forget(self, adapter_id: str) -> None:
@@ -266,6 +310,7 @@ class Registry:
                     raise ColdStartTimeoutError(adapter_id)
             del self._adapters[adapter_id]
         self._persist()
+        await redis_client.delete(f"adapter:{adapter_id}")
 
     # ---- internals. Both require the caller to already hold self._lock. ---
 
@@ -298,13 +343,16 @@ class Registry:
                 return False
             await asyncio.sleep(settings.drain_poll_interval_seconds)
         victim.state = AdapterState.UNLOADING
+        await self._sync_adapter_to_redis(victim)
         try:
             await vllm_client.unload_lora_adapter(victim.id)
         except VLLMError as exc:
             logger.warning("failed to unload '%s' during eviction: %s", victim.id, exc)
             victim.state = AdapterState.LOADED
+            await self._sync_adapter_to_redis(victim)
             return False
         victim.state = AdapterState.UNLOADED
+        await self._sync_adapter_to_redis(victim)
         logger.info("evicted LRU adapter '%s'", victim.id)
         return True
 

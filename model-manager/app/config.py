@@ -21,6 +21,11 @@ class Settings(BaseSettings):
 
     http_timeout_seconds: float = 120.0
 
+    redis_url: str = "redis://redis:6379/0"
+    redis_enabled: bool = True
+    redis_response_cache_ttl: int = 3600
+    redis_registry_ttl: int = 86400
+
     class Config:
         env_prefix = "MM_"
 

@@ -84,6 +84,10 @@ services:
       MM_ADAPTER_CAPACITY: ${MM_ADAPTER_CAPACITY:-2}
       MM_COLD_START_TIMEOUT_SECONDS: ${MM_COLD_START_TIMEOUT_SECONDS:-90}
       MM_DRAIN_TIMEOUT_SECONDS: ${MM_DRAIN_TIMEOUT_SECONDS:-30}
+      MM_REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      MM_REDIS_ENABLED: ${REDIS_ENABLED:-true}
+      MM_REDIS_RESPONSE_CACHE_TTL: ${REDIS_RESPONSE_CACHE_TTL:-3600}
+      MM_REDIS_REGISTRY_TTL: ${REDIS_REGISTRY_TTL:-86400}
     volumes:
       - ./loras:/loras
     # Not published to the host: the Model Manager is a control-plane +
@@ -101,6 +105,8 @@ services:
       retries: 5
     depends_on:
       vllm:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   bifrost:
@@ -128,6 +134,26 @@ services:
       model-manager:
         condition: service_healthy
 
+  redis:
+    container_name: vllm-bifrost-gateway-redis
+    image: redis:7.2-alpine
+    restart: unless-stopped
+    labels:
+      service: cache
+      project: bifrost-gateway
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    command: redis-server --appendonly yes --appendfsync everysec
+
 volumes:
   hf-cache:
   bifrost-data:
+  redis-data:

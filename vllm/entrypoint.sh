@@ -55,7 +55,8 @@ if [ "${VLLM_LANGUAGE_MODEL_ONLY:-false}" = "true" ]; then
   # Skip the vision encoder to free VRAM (text-only serving).
   mm_args+=(--language-model-only)
 else
-  mm_args+=(--limit-mm-per-prompt "image=${VLLM_MAX_IMAGES_PER_PROMPT:-2}")
+  # vLLM expects a JSON object here (it json.loads the value).
+  mm_args+=(--limit-mm-per-prompt "{\"image\": ${VLLM_MAX_IMAGES_PER_PROMPT:-2}}")
 fi
 
 # --- optional LoRA hot-swap ----------------------------------------------

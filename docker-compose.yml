@@ -1,5 +1,11 @@
+networks:
+  default:
+    name: bifrost-gateway
+    driver: bridge
+
 services:
   vllm:
+    container_name: vllm-bifrost-gateway-vllm
     # Qwen3.5 is recent: it needs a current vLLM (the v0.9.2 pin cannot load
     # it). Pin a specific tag here once you've verified one; `latest` tracks
     # the newest published image. If a stable tag lacks Qwen3.5 support, use a
@@ -10,6 +16,9 @@ services:
     # by the entrypoint script from the env vars below -- compose `command:`
     # can't express the conditional logic (FP16 = *no* --quantization flag).
     entrypoint: ["/bin/bash", "/vllm-entrypoint.sh"]
+    labels:
+      service: vllm-inference
+      project: bifrost-gateway
     environment:
       # --- model ---
       BASE_MODEL: ${BASE_MODEL:-Qwen/Qwen3.5-9B}
@@ -60,8 +69,12 @@ services:
               capabilities: [gpu]
 
   model-manager:
+    container_name: vllm-bifrost-gateway-model-manager
     build: ./model-manager
     restart: unless-stopped
+    labels:
+      service: model-manager
+      project: bifrost-gateway
     environment:
       MM_VLLM_BASE_URL: http://vllm:8000
       MM_BASE_MODEL: ${BASE_MODEL:-Qwen/Qwen3.5-9B}
@@ -80,13 +93,23 @@ services:
     # `docker compose exec model-manager ...` or `curl` from another service.
     expose:
       - "9000"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
     depends_on:
       vllm:
         condition: service_healthy
 
   bifrost:
+    container_name: vllm-bifrost-gateway-bifrost
     image: maximhq/bifrost:latest
     restart: unless-stopped
+    labels:
+      service: bifrost-gateway
+      project: bifrost-gateway
     environment:
       LOG_LEVEL: info
       LOG_STYLE: json
@@ -95,8 +118,15 @@ services:
       - bifrost-data:/app/data
     ports:
       - "${BIFROST_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     depends_on:
-      - model-manager
+      model-manager:
+        condition: service_healthy
 
 volumes:
   hf-cache:

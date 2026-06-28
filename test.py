@@ -1,82 +1,163 @@
+"""Query a Bifrost-fronted local model through both the OpenAI and Anthropic SDKs.
+
+All tweakable values live in the CONFIG block. Everything below it is pure-ish
+functions wired together in main().
+"""
+
 import base64
 import json
 import pathlib
 import urllib.request
+from dataclasses import dataclass
 
 from openai import OpenAI
 from anthropic import Anthropic
 
-# Load the "app-prod" VIRTUAL key straight from bifrost/config.json so it can
-# never be mistyped or drift. Bifrost enforces auth via the x-bf-vk header;
-# this is governance.virtual_keys[0].value -- NOT the sk-vllm- provider key.
-_cfg = json.loads((pathlib.Path(__file__).parent / "bifrost" / "config.json").read_text())
-VK = _cfg["governance"]["virtual_keys"][0]["value"]
 
-# Through Bifrost, models are addressed as "<provider>/<model-id>". The provider
-# prefix is required for routing; MODEL_ID must match BASE_MODEL_ID.
-PROVIDER = "local-vllm"
-MODEL_ID = "qwen3.5-9b"
-MODEL = f"{PROVIDER}/{MODEL_ID}"
+# --------------------------------------------------------------------------- #
+# CONFIG                                                                       #
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class Config:
+    # Bifrost config holding governance.virtual_keys[0].value (the VIRTUAL key,
+    # NOT the sk-vllm- provider key). Resolved relative to this file.
+    config_path: pathlib.Path = pathlib.Path(__file__).parent / "bifrost" / "config.json"
 
-openai_client = OpenAI(
-    base_url="http://localhost:8080/openai",
-    api_key=VK,
-    default_headers={"x-bf-vk": VK},
-)
-anthropic_client = Anthropic(
-    base_url="http://localhost:8080/anthropic",
-    api_key=VK,
-    default_headers={"x-bf-vk": VK},
-)
+    # Bifrost gateway. OpenAI- and Anthropic-format requests hit different paths.
+    openai_base_url: str = "http://localhost:8080/openai"
+    anthropic_base_url: str = "http://localhost:8080/anthropic"
 
-question = "What is capital of france?"
+    # Through Bifrost, models are addressed as "<provider>/<model-id>". The
+    # provider prefix is required for routing; model_id must match BASE_MODEL_ID.
+    provider: str = "local-vllm"
+    model_id: str = "qwen3.5-9b"
 
-# max_tokens is generous: Qwen3.5 is a reasoning model, so it spends tokens
-# "thinking" before the answer -- a small cap gets fully consumed by thinking
-# and leaves no answer text.
-oa_resp = openai_client.chat.completions.create(
-    model=MODEL,
-    messages=[{"role": "user", "content": question}],
-    max_tokens=512,
-)
-oa_msg = oa_resp.choices[0].message
-oa_reasoning = getattr(oa_msg, "reasoning", None) or getattr(oa_msg, "reasoning_content", "")
-print("[OpenAI SDK]   ", (oa_msg.content or "").strip())
-# print("[OpenAI reasoning]", oa_reasoning.strip() or "(no reasoning text -- raise max_tokens)")
+    # Generous cap: Qwen3.5 is a reasoning model and spends tokens "thinking"
+    # before answering. A small cap gets consumed by thinking, leaving no answer.
+    max_tokens: int = 512
 
-an_resp = anthropic_client.messages.create(
-    model=MODEL,
-    max_tokens=512,
-    messages=[{"role": "user", "content": question}],
-)
-# Anthropic-format content can be [ThinkingBlock, ..., TextBlock]; pull the
-# text block (empty if max_tokens was too small to get past thinking).
-an_text = next((b.text for b in an_resp.content if getattr(b, "type", None) == "text"), "")
-print("[Anthropic SDK]", an_text.strip() or "(no answer text -- raise max_tokens)")
+    question: str = "What is the capital of France?"
 
-# Vision: Qwen3.5-9B is multimodal, so an image_url part is served natively.
-# (Requires VLLM_LANGUAGE_MODEL_ONLY=false, the default.)
-# IMAGE_URL = "https://static.vecteezy.com/system/resources/thumbnails/050/393/628/small/cute-curious-gray-and-white-kitten-in-a-long-shot-photo.jpg"
+    # Toggles for the optional sections.
+    show_reasoning: bool = False
+    run_vision: bool = True
 
-# # Many image hosts (Wikimedia, vecteezy, ...) return 403 to server-side fetchers
-# # that lack a browser User-Agent, so vLLM can't pull the URL itself. Fetch it
-# # here with a UA and inline it as a base64 data URI -- the server fetches nothing.
-# _req = urllib.request.Request(IMAGE_URL, headers={"User-Agent": "Mozilla/5.0"})
-# with urllib.request.urlopen(_req, timeout=30) as _r:
-#     _ctype = _r.headers.get_content_type() or "image/jpeg"
-#     IMAGE_DATA_URI = f"data:{_ctype};base64," + base64.b64encode(_r.read()).decode()
+    # Vision: Qwen3.5-9B is multimodal (requires VLLM_LANGUAGE_MODEL_ONLY=false,
+    # the default). Many hosts 403 server-side fetchers without a browser UA, so
+    # we fetch with a UA and inline as base64 -- the server fetches nothing.
+    image_url: str = (
+        "https://static.vecteezy.com/system/resources/thumbnails/"
+        "050/393/628/small/cute-curious-gray-and-white-kitten-in-a-long-shot-photo.jpg"
+    )
+    vision_prompt: str = "Describe this image in one sentence."
+    image_user_agent: str = "Mozilla/5.0"
 
-# vision_resp = openai_client.chat.completions.create(
-#     model=MODEL,
-#     max_tokens=512,
-#     messages=[
-#         {
-#             "role": "user",
-#             "content": [
-#                 {"type": "text", "text": "Describe this image in one sentence."},
-#                 {"type": "image_url", "image_url": {"url": IMAGE_DATA_URI}},
-#             ],
-#         }
-#     ],
-# )
-# print("[OpenAI vision]", (vision_resp.choices[0].message.content or "").strip())
+    @property
+    def model(self) -> str:
+        return f"{self.provider}/{self.model_id}"
+
+
+# --------------------------------------------------------------------------- #
+# SETUP                                                                        #
+# --------------------------------------------------------------------------- #
+def load_virtual_key(config_path: pathlib.Path) -> str:
+    """Read governance.virtual_keys[0].value so it can't be mistyped or drift."""
+    cfg = json.loads(config_path.read_text())
+    return cfg["governance"]["virtual_keys"][0]["value"]
+
+
+def make_openai_client(base_url: str, vk: str) -> OpenAI:
+    # Bifrost enforces auth via the x-bf-vk header.
+    return OpenAI(base_url=base_url, api_key=vk, default_headers={"x-bf-vk": vk})
+
+
+def make_anthropic_client(base_url: str, vk: str) -> Anthropic:
+    return Anthropic(base_url=base_url, api_key=vk, default_headers={"x-bf-vk": vk})
+
+
+# --------------------------------------------------------------------------- #
+# QUERIES                                                                      #
+# --------------------------------------------------------------------------- #
+def ask_openai(client: OpenAI, model: str, question: str, max_tokens: int):
+    """Return (answer, reasoning) from the OpenAI-format endpoint."""
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": question}],
+        max_tokens=max_tokens,
+    )
+    msg = resp.choices[0].message
+    reasoning = getattr(msg, "reasoning", None) or getattr(msg, "reasoning_content", "")
+    return (msg.content or "").strip(), (reasoning or "").strip()
+
+
+def ask_anthropic(client: Anthropic, model: str, question: str, max_tokens: int) -> str:
+    """Return the answer text from the Anthropic-format endpoint.
+
+    Content can be [ThinkingBlock, ..., TextBlock]; pull the text block (empty
+    if max_tokens was too small to get past thinking).
+    """
+    resp = client.messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": question}],
+    )
+    text = next((b.text for b in resp.content if getattr(b, "type", None) == "text"), "")
+    return text.strip()
+
+
+def fetch_image_data_uri(url: str, user_agent: str) -> str:
+    """Fetch an image with a browser UA and inline it as a base64 data URI."""
+    req = urllib.request.Request(url, headers={"User-Agent": user_agent})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        ctype = r.headers.get_content_type() or "image/jpeg"
+        encoded = base64.b64encode(r.read()).decode()
+    return f"data:{ctype};base64,{encoded}"
+
+
+def ask_openai_vision(
+    client: OpenAI, model: str, prompt: str, image_data_uri: str, max_tokens: int
+) -> str:
+    resp = client.chat.completions.create(
+        model=model,
+        max_tokens=max_tokens,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_data_uri}},
+                ],
+            }
+        ],
+    )
+    return (resp.choices[0].message.content or "").strip()
+
+
+# --------------------------------------------------------------------------- #
+# MAIN                                                                         #
+# --------------------------------------------------------------------------- #
+def main(cfg: Config = Config()) -> None:
+    vk = load_virtual_key(cfg.config_path)
+    openai_client = make_openai_client(cfg.openai_base_url, vk)
+    anthropic_client = make_anthropic_client(cfg.anthropic_base_url, vk)
+
+    oa_answer, oa_reasoning = ask_openai(
+        openai_client, cfg.model, cfg.question, cfg.max_tokens
+    )
+    print("[OpenAI SDK]   ", oa_answer)
+    if cfg.show_reasoning:
+        print("[OpenAI reasoning]", oa_reasoning or "(no reasoning text -- raise max_tokens)")
+
+    an_answer = ask_anthropic(anthropic_client, cfg.model, cfg.question, cfg.max_tokens)
+    print("[Anthropic SDK]", an_answer or "(no answer text -- raise max_tokens)")
+
+    if cfg.run_vision:
+        data_uri = fetch_image_data_uri(cfg.image_url, cfg.image_user_agent)
+        vision_answer = ask_openai_vision(
+            openai_client, cfg.model, cfg.vision_prompt, data_uri, cfg.max_tokens
+        )
+        print("[OpenAI vision]", vision_answer)
+
+
+if __name__ == "__main__":
+    main()

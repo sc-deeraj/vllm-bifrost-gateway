@@ -79,7 +79,7 @@ exec vllm serve "${MODEL}" \
   --port 8000 \
   --max-model-len "${VLLM_MAX_MODEL_LEN:-32768}" \
   --gpu-memory-utilization "${VLLM_GPU_MEMORY_UTILIZATION:-0.90}" \
-  --reasoning-parser "${VLLM_REASONING_PARSER:-qwen3}" \
+  #-reasoning-parser "${VLLM_REASONING_PARSER:-qwen3}" \
   --enable-auto-tool-choice \
   --tool-call-parser qwen3_xml \
   "${precision_args[@]}" \
